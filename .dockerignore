@@ -1,0 +1,19 @@
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+.gradle
+.kotlin
+.omc
+build
+out
+HELP.md
+README.md
+*.md
+# Exclude tools from context — the image fetches pinned versions itself.
+apktool.jar
+uber-apk-signer.jar
+# OS / editor junk
+.DS_Store
+Thumbs.db

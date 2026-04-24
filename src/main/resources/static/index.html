@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>APK Rebirth · 오래된 앱을 새로 태어나게</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Pretendard:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <style>
+        :root {
+            --bg-0: #05060d;
+            --bg-1: #0b0d1a;
+            --panel: rgba(22, 24, 40, 0.72);
+            --panel-border: rgba(148, 163, 184, 0.14);
+            --panel-highlight: rgba(255, 255, 255, 0.04);
+            --text: #e8ecf5;
+            --text-dim: #9aa5bd;
+            --text-muted: #64718a;
+            --accent: #8b5cf6;
+            --accent-2: #22d3ee;
+            --accent-3: #f472b6;
+            --success: #34d399;
+            --warn: #fbbf24;
+            --error: #f87171;
+            --radius-lg: 22px;
+            --radius-md: 14px;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { min-height: 100%; }
+
+        body {
+            font-family: 'Pretendard', 'Inter', -apple-system, system-ui, 'Apple SD Gothic Neo', sans-serif;
+            color: var(--text);
+            background: radial-gradient(1200px 800px at 10% -10%, rgba(139, 92, 246, 0.28), transparent 60%),
+                        radial-gradient(1000px 700px at 110% 10%, rgba(34, 211, 238, 0.18), transparent 55%),
+                        radial-gradient(900px 900px at 50% 120%, rgba(244, 114, 182, 0.12), transparent 60%),
+                        linear-gradient(180deg, var(--bg-0), var(--bg-1));
+            min-height: 100vh;
+            padding: clamp(1rem, 3vw, 2.5rem);
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            line-height: 1.55;
+            -webkit-font-smoothing: antialiased;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed; inset: 0;
+            pointer-events: none;
+            background-image:
+                linear-gradient(rgba(255,255,255,0.028) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.028) 1px, transparent 1px);
+            background-size: 42px 42px;
+            mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+            -webkit-mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+        }
+
+        .shell {
+            position: relative;
+            width: 100%;
+            max-width: 880px;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+        }
+
+        header.hero {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: 0.5rem 0.25rem 0;
+        }
+
+        .brand { display: flex; align-items: center; gap: 0.75rem; }
+        .logo {
+            width: 42px; height: 42px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            display: grid; place-items: center;
+            box-shadow: 0 10px 30px -10px rgba(139, 92, 246, 0.55);
+            position: relative; overflow: hidden;
+        }
+        .logo::after {
+            content: ''; position: absolute; inset: 1px; border-radius: 11px;
+            background: linear-gradient(135deg, rgba(255,255,255,0.2), rgba(255,255,255,0) 50%);
+        }
+        .logo svg { width: 22px; height: 22px; position: relative; z-index: 1; }
+        .brand h1 { font-size: 1.1rem; letter-spacing: -0.01em; font-weight: 700; }
+        .brand p { font-size: 0.78rem; color: var(--text-dim); }
+
+        .panel {
+            position: relative;
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: var(--radius-lg);
+            backdrop-filter: blur(14px) saturate(140%);
+            -webkit-backdrop-filter: blur(14px) saturate(140%);
+            box-shadow: 0 30px 80px -30px rgba(0,0,0,0.6), inset 0 1px 0 var(--panel-highlight);
+        }
+
+        .hero-card { padding: clamp(1.5rem, 3vw, 2.25rem); }
+
+        .hero-card h2 {
+            font-size: clamp(1.45rem, 2.6vw, 2rem);
+            letter-spacing: -0.02em;
+            font-weight: 800;
+            background: linear-gradient(180deg, #fff, #b6bfd2);
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+            margin-bottom: 0.4rem;
+        }
+        .hero-card .lede {
+            color: var(--text-dim);
+            font-size: 0.95rem;
+            max-width: 52ch;
+        }
+        .hero-card .lede strong { color: var(--text); font-weight: 600; }
+
+        .drop-zone {
+            display: block;
+            margin-top: 1.5rem;
+            position: relative;
+            border: 1.5px dashed rgba(148, 163, 184, 0.28);
+            border-radius: 18px;
+            padding: 2.25rem 1.5rem;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color .2s, background .2s, transform .2s;
+            background:
+                radial-gradient(400px 200px at 50% -10%, rgba(139, 92, 246, 0.1), transparent 60%),
+                rgba(255,255,255,0.015);
+        }
+        .drop-zone:hover, .drop-zone.drag-over {
+            border-color: rgba(139, 92, 246, 0.6);
+            background:
+                radial-gradient(400px 200px at 50% -10%, rgba(139, 92, 246, 0.2), transparent 60%),
+                rgba(139, 92, 246, 0.04);
+        }
+        .drop-zone.drag-over { transform: scale(1.005); }
+
+        .drop-icon {
+            width: 56px; height: 56px;
+            margin: 0 auto 0.9rem;
+            border-radius: 16px;
+            background: linear-gradient(135deg, rgba(139,92,246,0.28), rgba(34,211,238,0.22));
+            border: 1px solid rgba(148,163,184,0.2);
+            display: grid; place-items: center;
+            color: #fff;
+        }
+        .drop-icon svg { width: 24px; height: 24px; }
+
+        .drop-zone .title { font-size: 1.02rem; font-weight: 600; display: block; }
+        .drop-zone .hint { color: var(--text-dim); font-size: 0.83rem; margin-top: 0.3rem; }
+
+        #fileInput { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+        .file-info {
+            display: none;
+            margin-top: 1rem;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.85rem 1rem;
+            background: rgba(148, 163, 184, 0.06);
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            border-radius: 12px;
+        }
+        .file-info.active { display: flex; }
+        .file-thumb {
+            width: 36px; height: 36px; border-radius: 10px;
+            background: linear-gradient(135deg, rgba(34,211,238,0.22), rgba(139,92,246,0.2));
+            display: grid; place-items: center; color: var(--accent-2);
+            flex-shrink: 0;
+        }
+        .file-meta { flex: 1; min-width: 0; }
+        .file-meta .name {
+            font-weight: 600; font-size: 0.92rem;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .file-meta .size { color: var(--text-dim); font-size: 0.78rem; margin-top: 0.1rem; }
+        .file-clear {
+            background: transparent; border: none; color: var(--text-muted);
+            cursor: pointer; padding: 0.35rem; border-radius: 8px;
+        }
+        .file-clear:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+
+        .actions { display: flex; gap: 0.75rem; margin-top: 1.25rem; }
+        .btn {
+            flex: 1;
+            display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+            padding: 0.95rem 1.25rem;
+            border-radius: 12px;
+            font-size: 0.95rem; font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            border: 1px solid transparent;
+            transition: transform .15s, box-shadow .2s, background .2s, border-color .2s, opacity .2s;
+        }
+        .btn-primary {
+            color: #fff;
+            background: linear-gradient(135deg, var(--accent), #6366f1 60%, var(--accent-2));
+            box-shadow: 0 12px 32px -12px rgba(139, 92, 246, 0.55);
+        }
+        .btn-primary:hover:not(:disabled) { transform: translateY(-1px); }
+        .btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
+        .btn-ghost {
+            background: rgba(148,163,184,0.06);
+            color: var(--text);
+            border-color: rgba(148,163,184,0.18);
+        }
+        .btn-ghost:hover:not(:disabled) { background: rgba(148,163,184,0.11); }
+
+        .spinner {
+            width: 16px; height: 16px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.25);
+            border-top-color: #fff;
+            animation: spin 0.7s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Progress */
+        #progressSection { display: none; padding: clamp(1.25rem, 2.5vw, 2rem); }
+        #progressSection.active { display: block; }
+
+        .progress-head {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap;
+        }
+        .progress-head h3 { font-size: 1rem; font-weight: 600; }
+        .progress-head .sub { font-size: 0.82rem; color: var(--text-muted); }
+
+        .bar-wrap {
+            height: 10px; background: rgba(148,163,184,0.1);
+            border-radius: 999px; overflow: hidden; position: relative;
+        }
+        .bar {
+            height: 100%; width: 0%;
+            background: linear-gradient(90deg, var(--accent), var(--accent-2));
+            border-radius: 999px;
+            transition: width .4s cubic-bezier(.4,0,.2,1);
+            box-shadow: 0 0 24px rgba(139, 92, 246, 0.45);
+        }
+
+        .stage-meta {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-top: 0.65rem;
+            color: var(--text-dim); font-size: 0.88rem;
+        }
+        .stage-meta .stage-text { color: var(--text); font-weight: 500; }
+
+        .steps {
+            list-style: none;
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 0.4rem;
+            margin-top: 1.25rem;
+        }
+        .step {
+            display: flex; flex-direction: column; align-items: center; gap: 0.4rem;
+            padding: 0.75rem 0.3rem;
+            border-radius: 12px;
+            background: rgba(148,163,184,0.04);
+            border: 1px solid rgba(148,163,184,0.08);
+            transition: all .3s;
+            text-align: center;
+        }
+        .step .num {
+            width: 26px; height: 26px; border-radius: 50%;
+            display: grid; place-items: center;
+            background: rgba(148,163,184,0.1);
+            font-size: 0.72rem; font-weight: 700;
+            color: var(--text-muted);
+            transition: all .3s;
+        }
+        .step .label { font-size: 0.72rem; color: var(--text-dim); }
+        .step.active {
+            background: rgba(139,92,246,0.12);
+            border-color: rgba(139,92,246,0.38);
+        }
+        .step.active .num {
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            color: #fff;
+            box-shadow: 0 0 16px rgba(139,92,246,0.5);
+        }
+        .step.active .label { color: var(--text); font-weight: 600; }
+        .step.done .num { background: var(--success); color: #06251b; }
+        .step.done .label { color: var(--text); }
+        .step.failed .num { background: var(--error); color: #2c0b0b; }
+
+        @media (max-width: 640px) {
+            .steps { grid-template-columns: repeat(3, 1fr); }
+        }
+
+        .logs {
+            margin-top: 1.25rem;
+            border: 1px solid rgba(148,163,184,0.12);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .logs summary {
+            list-style: none;
+            padding: 0.75rem 1rem;
+            cursor: pointer;
+            display: flex; align-items: center; justify-content: space-between;
+            font-size: 0.82rem;
+            color: var(--text-dim);
+            background: rgba(148,163,184,0.04);
+        }
+        .logs summary::-webkit-details-marker { display: none; }
+        .logs summary::after { content: '▾'; transition: transform .2s; }
+        .logs[open] summary::after { transform: rotate(180deg); }
+        .logs pre {
+            max-height: 260px; overflow: auto;
+            padding: 0.85rem 1rem;
+            background: #05070f;
+            color: #8ea4c6;
+            font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+            font-size: 0.72rem;
+            line-height: 1.55;
+            white-space: pre-wrap; word-break: break-word;
+        }
+
+        /* Result panel */
+        #resultSection {
+            display: none;
+            padding: clamp(1.25rem, 2.5vw, 2rem);
+        }
+        #resultSection.active {
+            display: grid;
+            grid-template-columns: 1.05fr 0.95fr;
+            gap: 1.5rem;
+            align-items: stretch;
+        }
+        @media (max-width: 720px) {
+            #resultSection.active { grid-template-columns: 1fr; }
+        }
+
+        .result-text { display: flex; flex-direction: column; }
+        .result-text h3 {
+            font-size: 1.2rem; font-weight: 700;
+            background: linear-gradient(180deg, #fff, #b6bfd2);
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+            margin-bottom: 0.35rem;
+        }
+        .result-text p { color: var(--text-dim); font-size: 0.92rem; margin-bottom: 1rem; }
+
+        .result-file {
+            display: flex; align-items: center; gap: 0.75rem;
+            padding: 0.85rem 1rem;
+            background: rgba(52,211,153,0.07);
+            border: 1px solid rgba(52,211,153,0.24);
+            border-radius: 12px;
+            margin-bottom: 1rem;
+        }
+        .result-file .check {
+            width: 34px; height: 34px; border-radius: 50%;
+            background: rgba(52,211,153,0.2); color: var(--success);
+            display: grid; place-items: center; flex-shrink: 0;
+        }
+        .result-file .info { min-width: 0; flex: 1; }
+        .result-file .info .name {
+            font-weight: 600; font-size: 0.92rem;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .result-file .info .size { color: var(--text-dim); font-size: 0.78rem; margin-top: 0.1rem; }
+
+        .qr-card {
+            background: rgba(148,163,184,0.04);
+            border: 1px solid rgba(148,163,184,0.14);
+            border-radius: 16px;
+            padding: 1.1rem;
+            display: flex; flex-direction: column; align-items: center; gap: 0.8rem;
+            text-align: center;
+        }
+        .qr-card h4 { font-size: 0.95rem; font-weight: 600; color: var(--text); }
+        .qr-card .desc { font-size: 0.8rem; color: var(--text-dim); max-width: 28ch; }
+        .qr-img-wrap {
+            padding: 12px; background: #fff; border-radius: 12px;
+            box-shadow: 0 12px 32px -14px rgba(0,0,0,0.7);
+        }
+        .qr-img-wrap img { display: block; width: 180px; height: 180px; }
+
+        .copy-row {
+            display: flex; gap: 0.4rem; width: 100%;
+            background: rgba(5,7,15,0.6);
+            border: 1px solid rgba(148,163,184,0.14);
+            border-radius: 10px; padding: 0.35rem 0.5rem;
+        }
+        .copy-row input {
+            flex: 1; background: transparent; border: none; outline: none;
+            color: var(--text-dim);
+            font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+            font-size: 0.72rem;
+            min-width: 0;
+        }
+        .copy-row button {
+            background: transparent; border: none; color: var(--accent-2);
+            font-size: 0.76rem; font-weight: 600; cursor: pointer;
+            padding: 0.25rem 0.55rem; border-radius: 6px;
+        }
+        .copy-row button:hover { background: rgba(34,211,238,0.12); }
+
+        .error-banner {
+            display: none;
+            align-items: flex-start; gap: 0.75rem;
+            padding: 0.9rem 1rem;
+            background: rgba(248,113,113,0.08);
+            border: 1px solid rgba(248,113,113,0.3);
+            border-radius: 12px;
+            margin-top: 1rem;
+            color: #fecaca;
+            font-size: 0.88rem;
+        }
+        .error-banner.active { display: flex; }
+        .error-banner svg { flex-shrink: 0; margin-top: 2px; }
+
+        .opt-row {
+            display: flex; gap: 0.75rem; align-items: flex-start;
+            margin-top: 1rem;
+            padding: 0.9rem 1rem;
+            background: rgba(148,163,184,0.04);
+            border: 1px solid rgba(148,163,184,0.14);
+            border-radius: 12px;
+            cursor: pointer;
+        }
+        .opt-row:hover { border-color: rgba(139,92,246,0.4); }
+        .opt-row input[type="checkbox"] {
+            appearance: none; -webkit-appearance: none;
+            width: 18px; height: 18px; flex-shrink: 0;
+            border: 1.5px solid rgba(148,163,184,0.45);
+            border-radius: 5px;
+            background: transparent;
+            cursor: pointer;
+            margin-top: 2px;
+            position: relative;
+            transition: background .15s, border-color .15s;
+        }
+        .opt-row input[type="checkbox"]:checked {
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            border-color: transparent;
+        }
+        .opt-row input[type="checkbox"]:checked::after {
+            content: ''; position: absolute;
+            left: 5px; top: 1px; width: 5px; height: 10px;
+            border: solid #fff; border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+        }
+        .opt-row strong { display: block; font-size: 0.9rem; font-weight: 600; }
+        .opt-row small { display: block; color: var(--text-dim); font-size: 0.78rem; margin-top: 0.15rem; line-height: 1.45; }
+
+        .install-help {
+            margin-top: 1rem;
+            padding: 0.9rem 1rem;
+            background: rgba(251,191,36,0.07);
+            border: 1px solid rgba(251,191,36,0.28);
+            border-radius: 12px;
+            font-size: 0.82rem;
+            color: #fde9a8;
+        }
+        .install-help summary {
+            list-style: none;
+            cursor: pointer;
+            font-weight: 600;
+            display: flex; align-items: center; justify-content: space-between;
+            color: var(--warn);
+        }
+        .install-help summary::-webkit-details-marker { display: none; }
+        .install-help summary::after { content: '▾'; transition: transform .2s; }
+        .install-help[open] summary::after { transform: rotate(180deg); }
+        .install-help ol { margin: 0.7rem 0 0 1.1rem; color: var(--text-dim); }
+        .install-help li { margin-bottom: 0.35rem; line-height: 1.5; }
+        .install-help code {
+            font-family: ui-monospace, monospace;
+            background: rgba(5,7,15,0.55);
+            padding: 1px 5px; border-radius: 5px;
+            font-size: 0.76rem;
+        }
+
+        footer {
+            text-align: center;
+            font-size: 0.74rem;
+            color: var(--text-muted);
+            padding: 0.25rem 0 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="shell">
+        <header class="hero">
+            <div class="brand">
+                <div class="logo">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 2v4"/><path d="m16.24 7.76 2.83-2.83"/><path d="M20 12h4"/>
+                        <path d="M4 12h4"/><path d="m4.93 4.93 2.83 2.83"/>
+                        <circle cx="12" cy="14" r="6"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1>APK Rebirth</h1>
+                    <p>오래된 앱을 새로 태어나게</p>
+                </div>
+            </div>
+        </header>
+
+        <section class="panel hero-card" id="uploadSection">
+            <h2>예전에 쓰던 앱, 다시 살려드려요</h2>
+            <p class="lede">
+                최신 안드로이드에서는 더 이상 설치되지 않는 <strong>낡은 APK 파일</strong>을 올려주시면,
+                자동으로 호환성 문제를 고치고 설치 가능한 새 파일로 만들어드려요.
+            </p>
+
+            <form id="uploadForm" novalidate>
+                <label for="fileInput" id="dropZone" class="drop-zone">
+                    <div class="drop-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>
+                        </svg>
+                    </div>
+                    <span class="title">APK 파일을 여기로 끌어다 놓거나 눌러서 선택하세요</span>
+                    <span class="hint">최대 500MB · .apk 파일만 지원</span>
+                </label>
+                <input type="file" id="fileInput" name="file" accept=".apk" />
+
+                <div id="fileInfo" class="file-info">
+                    <div class="file-thumb">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="3" width="18" height="18" rx="3"/>
+                            <path d="M8 8h8M8 12h8M8 16h5"/>
+                        </svg>
+                    </div>
+                    <div class="file-meta">
+                        <div class="name" id="fileName">filename.apk</div>
+                        <div class="size" id="fileSize">0 MB</div>
+                    </div>
+                    <button type="button" class="file-clear" id="clearFile" aria-label="선택 취소">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <label class="opt-row">
+                    <input type="checkbox" id="renamePackage" />
+                    <span>
+                        <strong>악성 앱으로 차단된 경우 우회 시도</strong>
+                        <small>패키지 이름을 살짝 바꿔서 차단 목록을 피해요. 일부 앱은 이 옵션을 켜면 동작이 달라질 수 있어요.</small>
+                    </span>
+                </label>
+
+                <div class="actions">
+                    <button type="submit" id="submitBtn" class="btn btn-primary">
+                        <span id="submitSpinner" class="spinner" style="display:none"></span>
+                        <span id="submitText">새로 태어나게 하기</span>
+                    </button>
+                </div>
+
+                <div id="errorBanner" class="error-banner">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                    </svg>
+                    <span id="errorText"></span>
+                </div>
+            </form>
+        </section>
+
+        <section class="panel" id="progressSection">
+            <div class="progress-head">
+                <h3>APK를 되살리는 중이에요</h3>
+                <span class="sub">잠시만 기다려 주세요. 보통 1~3분이 걸려요.</span>
+            </div>
+            <div class="bar-wrap"><div id="progressBar" class="bar"></div></div>
+            <div class="stage-meta">
+                <span class="stage-text" id="stageText">준비 중…</span>
+                <span id="progressPct">0%</span>
+            </div>
+
+            <ul class="steps" id="stepsList">
+                <li class="step" data-stage="UPLOADED"><span class="num">1</span><span class="label">업로드</span></li>
+                <li class="step" data-stage="DECOMPILING"><span class="num">2</span><span class="label">분석</span></li>
+                <li class="step" data-stage="PATCHING"><span class="num">3</span><span class="label">호환성<br/>수정</span></li>
+                <li class="step" data-stage="REBUILDING"><span class="num">4</span><span class="label">재생성</span></li>
+                <li class="step" data-stage="SIGNING"><span class="num">5</span><span class="label">서명</span></li>
+                <li class="step" data-stage="COMPLETED"><span class="num">✓</span><span class="label">완료</span></li>
+            </ul>
+
+            <details class="logs">
+                <summary>자세한 처리 내역 보기</summary>
+                <pre id="logOutput"></pre>
+            </details>
+        </section>
+
+        <section class="panel" id="resultSection">
+            <div class="result-text">
+                <h3>🎉 새 APK가 준비됐어요</h3>
+                <p>안드로이드 9부터 최신 버전까지 설치할 수 있어요. 아래에서 바로 받거나, QR 코드를 폰으로 스캔해 설치할 수 있어요.</p>
+
+                <div class="result-file">
+                    <div class="check">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                    </div>
+                    <div class="info">
+                        <div class="name" id="resultName">output-rebirth.apk</div>
+                        <div class="size" id="resultMeta">설치 준비 완료</div>
+                    </div>
+                </div>
+
+                <details class="install-help">
+                    <summary>설치할 때 "호환되지 않음" 이나 "차단됨" 이 뜨면 펼쳐보세요</summary>
+                    <ol>
+                        <li><strong>우회 옵션 켜기:</strong> 업로드 화면에서 <em>"악성 앱으로 차단된 경우 우회 시도"</em> 를 체크하고 다시 변환해 보세요.</li>
+                        <li><strong>Play 프로텍트 끄기:</strong> Play 스토어 → 프로필 → <em>Play 프로텍트</em> → 설정 → <em>기기 스캔</em> 끄기. 설치 후 다시 켜도 돼요.</li>
+                        <li><strong>"어쨌든 설치":</strong> 경고 창이 뜨면 <em>상세 정보 → 설치</em>(또는 <em>무시하고 설치</em>)를 눌러보세요.</li>
+                        <li><strong>ADB로 강제 설치:</strong> PC에 연결해 <code>adb install --bypass-low-target-sdk-block 파일.apk</code>.</li>
+                        <li><strong>알 수 없는 출처 허용:</strong> 설정 → 앱 → 이 앱을 설치한 브라우저/파일관리자 → <em>알 수 없는 앱 설치</em> 허용.</li>
+                    </ol>
+                </details>
+
+                <div class="actions">
+                    <a id="downloadBtn" class="btn btn-primary" download>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>
+                        </svg>
+                        바로 내려받기
+                    </a>
+                    <button type="button" id="restartBtn" class="btn btn-ghost">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 12a9 9 0 1 0 3-6.708"/><polyline points="3 4 3 10 9 10"/>
+                        </svg>
+                        다시 시작
+                    </button>
+                </div>
+            </div>
+
+            <div class="qr-card">
+                <h4>폰으로 바로 설치하기</h4>
+                <div class="qr-img-wrap"><img id="qrImage" alt="다운로드 QR" /></div>
+                <p class="desc">휴대폰 카메라로 이 QR을 비추면 바로 APK를 내려받을 수 있어요.</p>
+                <div class="copy-row">
+                    <input id="qrUrl" readonly />
+                    <button type="button" id="copyUrl">복사</button>
+                </div>
+            </div>
+        </section>
+
+        <footer>만든 파일은 개인 용도로만 사용하세요.</footer>
+    </div>
+
+    <script>
+        const el = (id) => document.getElementById(id);
+        const dropZone = el('dropZone');
+        const fileInput = el('fileInput');
+        const fileInfo = el('fileInfo');
+        const fileName = el('fileName');
+        const fileSize = el('fileSize');
+        const clearFile = el('clearFile');
+        const uploadForm = el('uploadForm');
+        const submitBtn = el('submitBtn');
+        const submitSpinner = el('submitSpinner');
+        const submitText = el('submitText');
+        const uploadSection = el('uploadSection');
+        const progressSection = el('progressSection');
+        const resultSection = el('resultSection');
+        const progressBar = el('progressBar');
+        const progressPct = el('progressPct');
+        const stageText = el('stageText');
+        const stepsList = el('stepsList');
+        const logOutput = el('logOutput');
+        const errorBanner = el('errorBanner');
+        const errorText = el('errorText');
+        const resultName = el('resultName');
+        const resultMeta = el('resultMeta');
+        const downloadBtn = el('downloadBtn');
+        const qrImage = el('qrImage');
+        const qrUrl = el('qrUrl');
+        const copyUrl = el('copyUrl');
+        const restartBtn = el('restartBtn');
+
+        const STAGES = ['UPLOADED','DECOMPILING','PATCHING','REBUILDING','SIGNING','COMPLETED'];
+        let currentEventSource = null;
+
+        const humanSize = (bytes) => {
+            if (bytes == null) return '';
+            const u = ['B','KB','MB','GB']; let i = 0; let b = bytes;
+            while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+            return `${b.toFixed(b < 10 && i > 0 ? 2 : 1)} ${u[i]}`;
+        };
+
+        const showError = (msg) => { errorText.textContent = msg; errorBanner.classList.add('active'); };
+        const hideError = () => errorBanner.classList.remove('active');
+
+        function resetSubmit() {
+            submitBtn.disabled = false;
+            submitSpinner.style.display = 'none';
+            submitText.textContent = '새로 태어나게 하기';
+        }
+
+        function setFile(file) {
+            if (!file) return;
+            if (!/\.apk$/i.test(file.name)) {
+                showError('APK 파일(.apk)만 올릴 수 있어요.');
+                return;
+            }
+            hideError();
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            fileInput.files = dt.files;
+            fileName.textContent = file.name;
+            fileSize.textContent = humanSize(file.size);
+            fileInfo.classList.add('active');
+        }
+
+        ['dragenter','dragover'].forEach(ev =>
+            dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add('drag-over'); })
+        );
+        ['dragleave','drop'].forEach(ev =>
+            dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove('drag-over'); })
+        );
+        dropZone.addEventListener('drop', e => {
+            e.preventDefault();
+            if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+        });
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length) setFile(fileInput.files[0]);
+        });
+        clearFile.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            fileInput.value = '';
+            fileInfo.classList.remove('active');
+            hideError();
+        });
+
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideError();
+            if (!fileInput.files.length) {
+                showError('먼저 APK 파일을 선택해 주세요.');
+                return;
+            }
+            submitBtn.disabled = true;
+            submitSpinner.style.display = 'inline-block';
+            submitText.textContent = '업로드 중…';
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            const rename = document.getElementById('renamePackage');
+            if (rename && rename.checked) formData.append('renamePackage', 'true');
+
+            try {
+                const resp = await fetch('/api/jobs', { method: 'POST', body: formData });
+                if (!resp.ok) {
+                    const body = await resp.json().catch(() => ({}));
+                    throw new Error(body.error || '업로드에 실패했어요. 잠시 후 다시 시도해 주세요.');
+                }
+                const job = await resp.json();
+                beginTracking(job.jobId);
+            } catch (err) {
+                console.error(err);
+                showError(err.message || '업로드에 실패했어요.');
+                resetSubmit();
+            }
+        });
+
+        function beginTracking(jobId) {
+            uploadSection.style.display = 'none';
+            resultSection.classList.remove('active');
+            progressSection.classList.add('active');
+            logOutput.textContent = '';
+            setProgress(2);
+            stageText.textContent = '준비 중…';
+            markSteps(null);
+
+            if (currentEventSource) { try { currentEventSource.close(); } catch(_){} }
+            const es = new EventSource(`/api/jobs/${jobId}/stream`);
+            currentEventSource = es;
+            es.addEventListener('state', (ev) => handleState(jobId, JSON.parse(ev.data)));
+            es.onerror = () => { pollOnce(jobId); };
+        }
+
+        async function pollOnce(jobId) {
+            try {
+                const r = await fetch(`/api/jobs/${jobId}/status`);
+                if (r.ok) handleState(jobId, await r.json());
+            } catch(_) {}
+        }
+
+        function handleState(jobId, state) {
+            setProgress(state.progress);
+            stageText.textContent = state.message ? `${state.stageLabel} · ${state.message}` : state.stageLabel;
+            markSteps(state.stage);
+            if (state.logs && state.logs.length) {
+                logOutput.textContent = state.logs.slice(-400).join('\n');
+                logOutput.scrollTop = logOutput.scrollHeight;
+            }
+            if (state.stage === 'COMPLETED') {
+                if (currentEventSource) currentEventSource.close();
+                showResult(jobId, state);
+            } else if (state.stage === 'FAILED') {
+                if (currentEventSource) currentEventSource.close();
+                showFailure(state.error || state.message || '처리 중 문제가 생겼어요.');
+            }
+        }
+
+        function setProgress(pct) {
+            progressBar.style.width = `${Math.max(2, Math.min(100, pct))}%`;
+            progressPct.textContent = `${pct}%`;
+        }
+
+        function markSteps(currentStage) {
+            const idx = STAGES.indexOf(currentStage);
+            [...stepsList.children].forEach((li) => {
+                const stageIdx = STAGES.indexOf(li.dataset.stage);
+                li.classList.remove('active','done','failed');
+                if (currentStage === 'FAILED') { li.classList.add('failed'); return; }
+                if (idx < 0) return;
+                if (stageIdx < idx) li.classList.add('done');
+                else if (stageIdx === idx) li.classList.add('active');
+            });
+        }
+
+        async function showResult(jobId, state) {
+            const downloadUrl = `/api/jobs/${jobId}/download`;
+            downloadBtn.href = downloadUrl;
+            downloadBtn.setAttribute('download', state.outputFileName || 'rebirth.apk');
+            resultName.textContent = state.outputFileName || 'rebirth.apk';
+            resultMeta.textContent = '설치 준비 완료';
+
+            try {
+                const res = await fetch(`/api/jobs/${jobId}/qr`);
+                if (res.ok) {
+                    const absUrl = res.headers.get('X-Download-Url') || (location.origin + downloadUrl);
+                    qrUrl.value = absUrl;
+                    const blob = await res.blob();
+                    qrImage.src = URL.createObjectURL(blob);
+                } else {
+                    qrUrl.value = location.origin + downloadUrl;
+                }
+            } catch (_) {
+                qrUrl.value = location.origin + downloadUrl;
+            }
+
+            progressSection.classList.remove('active');
+            resultSection.classList.add('active');
+            resetSubmit();
+        }
+
+        function showFailure(msg) {
+            progressSection.classList.remove('active');
+            uploadSection.style.display = '';
+            showError(`처리에 실패했어요: ${msg}`);
+            resetSubmit();
+        }
+
+        copyUrl.addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(qrUrl.value);
+                copyUrl.textContent = '복사됨';
+                setTimeout(() => (copyUrl.textContent = '복사'), 1500);
+            } catch (_) {
+                qrUrl.select(); document.execCommand('copy');
+            }
+        });
+
+        restartBtn.addEventListener('click', () => {
+            resultSection.classList.remove('active');
+            progressSection.classList.remove('active');
+            uploadSection.style.display = '';
+            fileInput.value = '';
+            fileInfo.classList.remove('active');
+            hideError();
+        });
+    </script>
+</body>
+</html>
