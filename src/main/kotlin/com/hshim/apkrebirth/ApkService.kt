@@ -1198,12 +1198,17 @@ class ApkService(private val jobManager: JobManager) {
 .end method
 
 .method public static registerReceiver(Landroid/content/Context;Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;Ljava/lang/String;Landroid/os/Handler;)Landroid/content/Intent;
-    .registers 7
+    .registers 11
     sget v0, Landroid/os/Build${'$'}VERSION;->SDK_INT:I
     const/16 v1, 0x21
     if-lt v0, v1, :legacy
-    const/4 v1, 0x2
-    invoke-virtual {p0, p1, p2, p3, p4, v1}, Landroid/content/Context;->registerReceiver(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;Ljava/lang/String;Landroid/os/Handler;I)Landroid/content/Intent;
+    move-object v0, p0
+    move-object v1, p1
+    move-object v2, p2
+    move-object v3, p3
+    move-object v4, p4
+    const/4 v5, 0x2
+    invoke-virtual/range {v0 .. v5}, Landroid/content/Context;->registerReceiver(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;Ljava/lang/String;Landroid/os/Handler;I)Landroid/content/Intent;
     move-result-object v0
     return-object v0
     :legacy
