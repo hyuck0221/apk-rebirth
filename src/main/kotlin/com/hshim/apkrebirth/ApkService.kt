@@ -47,17 +47,57 @@ class ApkService(private val jobManager: JobManager) {
     @Value("\${apk-rebirth.min-sdk-floor:21}")
     private var minSdkFloor: Int = 21
 
-    // 35 = Android 15. Needed to clear the last wave of OEM launch-time compatibility
-    // blocks (HyperOS 2.0.X and One UI 7 raise the threshold to deviceSdk - 0 on newer
-    // firmware). Mitigations for the hazards this flips on:
-    //   - target ≥ 31 exported enforcement       → handled in modifyManifest
-    //   - target ≥ 31 PendingIntent immutability → handled by injectPendingIntentCompatShim
-    //   - target ≥ 34 foreground-service-type    → handled in modifyManifest
-    //   - target ≥ 35 edge-to-edge enforcement   → opted out via the window property
-    //     `android.window.PROPERTY_ACTIVITY_EMBEDDING_ALLOW_SYSTEM_OVERRIDE` + legacy
-    //     `android:windowOptOutEdgeToEdgeEnforcement` (added below in modifyManifest).
-    @Value("\${apk-rebirth.target-sdk-version:35}")
-    private var targetSdkVersion: Int = 35
+    // Runtime targetSdkVersion written into the rebuilt AndroidManifest.
+    //
+    // 34 (Android 14) is the highest value we can reach safely — it clears every
+    // OEM soft-warning threshold observed in the wild (including tightened HyperOS
+    // 3 beta / One UI 8 builds that push their floor to 33-34) while all of the
+    // hard enforcements it introduces are actively shimmed here:
+    //   - 31+ exported attribute enforcement       → modifyManifest
+    //   - 31+ PendingIntent flag immutability      → injectPendingIntentCompatShim
+    //   - 33+ POST_NOTIFICATIONS runtime permission → declared in manifest; a user
+    //         denial silently drops notifications, no launch crash
+    //   - 34+ Context.registerReceiver() requires RECEIVER_EXPORTED/NOT_EXPORTED
+    //         → injectReceiverCompatShim rewrites call sites to OR-in the flag
+    //   - 34+ foreground-service-type enforcement  → every service is stamped with
+    //         multi-type `dataSync|specialUse` + PROPERTY_SPECIAL_USE_FGS_SUBTYPE,
+    //         so startForeground() survives whichever type it actually passes
+    //
+    // We deliberately STOP at 34 to stay below the API levels whose runtime traps
+    // cannot be opted-out from a post-compiled APK:
+    //   - target ≥ 35: edge-to-edge enforcement. Window draws behind system bars;
+    //       legacy layouts that don't query WindowInsets get clipped or crash
+    //       during measure/layout. Manifest-level opt-out is NOT available — it's
+    //       a theme attribute (`android:windowOptOutEdgeToEdgeEnforcement`), which
+    //       we can't reliably inject into an arbitrary decoded resource table.
+    //   - target ≥ 35 on 16KB-page Android 15 devices (Pixel 9+): native libs
+    //       built with NDK < r26 are not 16KB-aligned and fail to load at runtime.
+    //       Completely unfixable without re-linking the .so files.
+    //
+    // The OEM "이 앱은 최신 Android 와 호환되지 않습니다" dialog is driven by the
+    // DEX container version + compileSdkVersion build marker + (on stricter OEMs)
+    // the manifest targetSdk floor. Those "freshly compiled" markers are
+    // controlled by [buildApiLevel] below, which stays at 35 so the APK still
+    // looks modern to the installer; targetSdkVersion=34 covers the OEM
+    // target-floor heuristics even on tightened firmware.
+    @Value("\${apk-rebirth.target-sdk-version:34}")
+    private var targetSdkVersion: Int = 34
+
+    // API level for the DEX container emission (apktool `--api-level`) and the
+    // manifest-root build markers (compileSdkVersion, compileSdkVersionCodename,
+    // platformBuildVersionCode, platformBuildVersionName).
+    //
+    // This is what makes OEM package installers (HyperOS, One UI, ColorOS) treat
+    // the APK as freshly compiled against a modern SDK and stop showing the
+    // "최신 Android 와 호환되지 않습니다" dialog. Intentionally decoupled from
+    // [targetSdkVersion]:
+    //   - buildApiLevel governs how the APK LOOKS to the installer (static metadata)
+    //   - targetSdkVersion governs how the app BEHAVES at runtime (OS-enforced rules)
+    // Conflating the two is what caused the previous "installs but won't launch"
+    // regression — legacy app code cannot survive target-35 runtime rules, but can
+    // happily ride in a DEX 040 container.
+    @Value("\${apk-rebirth.build-api-level:35}")
+    private var buildApiLevel: Int = 35
 
     private val workspaceRoot: File by lazy {
         val dir = if (workspaceProp.isNotBlank()) File(workspaceProp)
@@ -199,27 +239,33 @@ class ApkService(private val jobManager: JobManager) {
         patchApktoolYaml(job, extractedDir, newPackageName)
         normaliseNativeLibs(job, extractedDir)
         injectPendingIntentCompatShim(job, extractedDir)
+        injectReceiverCompatShim(job, extractedDir)
         if (newPackageName != null && originalPackage != null) {
             jobManager.log(job, "🕵️ 패키지 이름을 '$originalPackage' → '$newPackageName' 로 바꿨어요")
         }
 
         val modifiedApk = File(tempDir, "modified.apk")
         jobManager.updateStage(job, JobStage.REBUILDING, "새 APK 파일로 다시 묶고 있어요")
-        // --api-level $targetSdkVersion forces the smali assembler to emit a modern DEX
-        // container (version 040 for API >= 29, 039 for API >= 28, ...). Without this flag
+        // --api-level $buildApiLevel forces the smali assembler to emit a modern DEX
+        // container (version 040 for API >= 33, 039 for API >= 28, ...). Without this flag
         // apktool defaults to DEX 035 — the Android-1.0-era format — which OEM package
         // installers (HyperOS, One UI, ColorOS) treat as a decisive "ancient APK" marker
         // and respond to with the "Android 최신 버전과 호환되지 않습니다" dialog regardless
-        // of anything in AndroidManifest.xml. This single flag is the fix that actually
-        // silences the dialog for real — every prior manifest tweak was necessary for
-        // runtime compatibility but insufficient to clear the OEM container check.
+        // of anything in AndroidManifest.xml. This is the fix that actually silences the
+        // dialog — every prior manifest tweak was necessary for runtime compatibility but
+        // insufficient to clear the OEM container check.
+        //
+        // Note: uses [buildApiLevel] (static "looks modern" marker, default 35), NOT the
+        // runtime [targetSdkVersion] (behavior rules, default 31). The two are decoupled
+        // so legacy apps get a modern DEX container without inheriting the Android-14+
+        // runtime-compat traps (foreground-service-type, edge-to-edge, 16KB pages, ...).
         executeCommand(
             job, tempDir,
             *(apktoolCmd + listOf(
                 "b", extractedDir.absolutePath,
                 "-o", modifiedApk.absolutePath,
                 "-f", "--no-crunch",
-                "--api-level", targetSdkVersion.toString(),
+                "--api-level", buildApiLevel.toString(),
             )).toTypedArray(),
         )
 
@@ -298,9 +344,10 @@ class ApkService(private val jobManager: JobManager) {
         // as a "this APK was built against a modern SDK" signal. Apktool's rebuild does NOT
         // re-inject them automatically, so without this step every patched APK shows the
         // "이 앱은 Android 최신 버전과 호환되지 않습니다" dialog regardless of targetSdkVersion.
-        // We force-overwrite them to match our target so the APK looks freshly compiled.
-        val buildCode = targetSdkVersion.toString()
-        val buildCodename = sdkCodename(targetSdkVersion)
+        // We force-overwrite them to match [buildApiLevel] (the "looks modern" knob) so the
+        // APK appears freshly compiled without altering the runtime target SDK.
+        val buildCode = buildApiLevel.toString()
+        val buildCodename = sdkCodename(buildApiLevel)
         fun upsertRootAttr(name: String, value: String, inAndroidNs: Boolean) {
             if (inAndroidNs) {
                 val attr = root.attribute(qn(name))
@@ -315,6 +362,14 @@ class ApkService(private val jobManager: JobManager) {
         // platformBuildVersionCode/Name live in the default (no-prefix) namespace.
         upsertRootAttr("platformBuildVersionCode", buildCode, inAndroidNs = false)
         upsertRootAttr("platformBuildVersionName", buildCodename, inAndroidNs = false)
+
+        // targetSandboxVersion=2 is the "modern SELinux-isolated" sandbox (introduced
+        // in API 26). Several OEM package installers (HyperOS, One UI) include this
+        // attribute in their "looks freshly-built" heuristic — absence is weighed as
+        // another "ancient APK" signal. It's purely metadata from the app's POV and
+        // does not change runtime behavior for apps targeting API ≥ 26, so forcing
+        // it to "2" is safe across the board.
+        upsertRootAttr("targetSandboxVersion", "2", inAndroidNs = true)
 
         // Remove install-restricting siblings that often block on modern devices
         root.elements("compatible-screens").toList().forEach { root.remove(it as Element) }
@@ -346,9 +401,14 @@ class ApkService(private val jobManager: JobManager) {
             "android.permission.INTERNET",
             "android.permission.POST_NOTIFICATIONS",
             "android.permission.FOREGROUND_SERVICE",
-            // Required at target >= 34 when any service declares foregroundServiceType="dataSync".
-            // Harmless on older Android versions (just ignored), so we always add it.
+            // At target ≥ 34, a service that declares foregroundServiceType=X must
+            // ALSO hold the matching FOREGROUND_SERVICE_X permission, or
+            // startForeground() throws SecurityException the first time it's called.
+            // We default every unlabeled service to `dataSync|specialUse` below,
+            // so both permissions are needed. Declaring them here is harmless on
+            // older Android (install-time only, no runtime dialog).
             "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+            "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
         )
         val existingPermNames = root.elements("uses-permission")
             .map { (it as Element).attributeValue(qn("name")) }
@@ -389,6 +449,11 @@ class ApkService(private val jobManager: JobManager) {
                 // Generic category so launcher/installer treats this like a game rather
                 // than "unknown legacy app".
                 "appCategory" to "game",
+                // Signals a modern build to strict OEM installers (HyperOS 2+, One UI 7+)
+                // that additionally check whether the manifest looks like it came out of
+                // a modern Android Studio template. Legacy LTR layouts render unchanged
+                // on LTR locales; only RTL locales see mirroring, which isn't a crash.
+                "supportsRtl" to "true",
             )
             flags.forEach { (name, value) ->
                 val attr = app.attribute(qn(name))
@@ -397,12 +462,14 @@ class ApkService(private val jobManager: JobManager) {
 
             app.addAttribute(qn("networkSecurityConfig"), "@xml/network_security_config")
 
-            // Android 15 (target ≥ 35) forces edge-to-edge layout: window content draws
-            // behind the system bars. Legacy apps don't account for that and either clip
-            // UI or crash on insets queries. The opt-out `<property>` below keeps the
-            // Android-14 window geometry intact on Android 15+ devices.
-            val optOutPropName = "android.window.PROPERTY_COMPAT_ALLOW_IGNORING_ORIENTATION_REQUEST_WHEN_LOOP_DETECTED"
-            val edgeOutPropName = "android.app.PROPERTY_ALLOW_DISPLAY_CUTOUT_DISPLAY_LEVEL_ONLY"
+            // Window-compat opt-outs. These <property> names are the ACTUAL constants
+            // defined on android.view.WindowManager / android.content.pm.PackageManager;
+            // any other name is silently ignored by the framework (the previous revision
+            // shipped a non-existent `PROPERTY_ALLOW_DISPLAY_CUTOUT_DISPLAY_LEVEL_ONLY`
+            // which contributed to nothing). Edge-to-edge opt-out is a theme attribute
+            // (`android:windowOptOutEdgeToEdgeEnforcement`), not a <property>, so it
+            // cannot be injected from here — that's handled instead by keeping
+            // [targetSdkVersion] ≤ 34 so Android 15 doesn't enforce edge-to-edge at all.
             fun addProperty(name: String, value: String) {
                 val exists = app.elements("property").any { (it as Element).attributeValue(qn("name")) == name }
                 if (!exists) {
@@ -411,8 +478,11 @@ class ApkService(private val jobManager: JobManager) {
                         .addAttribute(qn("value"), value)
                 }
             }
-            addProperty(optOutPropName, "true")
-            addProperty(edgeOutPropName, "true")
+            // Orientation-request-loop relief for legacy portrait-locked activities on
+            // large screens (Samsung foldables, tablets running One UI 6+).
+            addProperty("android.window.PROPERTY_COMPAT_ALLOW_IGNORING_ORIENTATION_REQUEST_WHEN_LOOP_DETECTED", "true")
+            // Lets resizeable/letter-boxed activities receive focus even when the window
+            // manager splits them into compat sandboxes.
             addProperty("android.window.PROPERTY_COMPAT_ENABLE_FAKE_FOCUS", "true")
 
             // Soft-require any <uses-library> so missing libs (e.g. legacy Google Maps) don't block install
@@ -457,13 +527,29 @@ class ApkService(private val jobManager: JobManager) {
                         }
                     }
                     if (compName == "service") {
-                        // At target >= 34, any service that calls startForeground() must have
-                        // foregroundServiceType set AND hold a matching permission, or the OS
-                        // throws MissingForegroundServiceTypeException on first startForeground().
-                        // We don't know which services will be foregrounded, so we default all
-                        // of them to "dataSync" — a generic bucket with permissive framework behavior.
+                        // At target >= 34, a service that calls startForeground(flags,type)
+                        // must have ALL of the types it passes at runtime declared on the
+                        // manifest element, otherwise the framework throws
+                        // MissingForegroundServiceTypeException / SecurityException.
+                        //
+                        // We don't know what each legacy service actually does, so we widen
+                        // the default declaration to two types simultaneously (Android
+                        // accepts pipe-separated values):
+                        //   - dataSync    : matches generic background work (sync, upload)
+                        //   - specialUse  : escape hatch for everything else
+                        // specialUse must be accompanied by a <property> explaining the
+                        // use case (otherwise PackageManager rejects on Play Store;
+                        // sideload is more permissive but we include it for safety).
                         if (element.attribute(qn("foregroundServiceType")) == null) {
-                            element.addAttribute(qn("foregroundServiceType"), "dataSync")
+                            element.addAttribute(qn("foregroundServiceType"), "dataSync|specialUse")
+                        }
+                        val hasSpecialUseProp = element.elements("property").any {
+                            (it as Element).attributeValue(qn("name")) == "android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                        }
+                        if (!hasSpecialUseProp) {
+                            element.addElement("property")
+                                .addAttribute(qn("name"), "android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE")
+                                .addAttribute(qn("value"), "legacy_app_modernization")
                         }
                     }
                 }
@@ -596,15 +682,20 @@ class ApkService(private val jobManager: JobManager) {
     }
 
     /**
-     * Pick the safest targetSdk for a legacy APK.
+     * Pick the safest manifest targetSdk for a legacy APK.
      *
-     * Floor = 30 (Samsung/Xiaomi/HyperOS stop showing the "not compatible with latest
-     * Android" warning once target ≥ 30; Samsung's internal threshold is 29, Xiaomi's is 30).
-     * Ceiling = `targetSdkVersion` setting (default 30). Going above 30 flips on exported
-     * enforcement and PendingIntent immutability (target ≥ 31), which crash untouched legacy code.
+     * Ceiling  = [targetSdkVersion] (default 31). Above this level, Android 14/15 turn on
+     *            runtime-compat traps (foreground-service-type at 34+, edge-to-edge at 35+,
+     *            16KB page alignment at 35+) that a post-compiled APK cannot fully escape.
+     *            Pushing above the ceiling is what caused the "installs but won't launch"
+     *            regression on Android 14/15, so the ceiling is a hard cap.
+     * Floor    = 30, clamped to ≤ ceiling. Samsung/Xiaomi/HyperOS stop showing the
+     *            "구버전 앱" warning once target ≥ 30 (Samsung 29, Xiaomi 30).
      *
-     * If the original target was already ≥ warning floor AND ≤ ceiling, keep it as-is to avoid
-     * unnecessary re-baselining. Otherwise clamp to ceiling.
+     * When the original target already sits in [floor, ceiling] we keep it to minimise
+     * churn; otherwise we clamp to ceiling. Apps whose original target sat above the
+     * ceiling are intentionally LOWERED — they'd install but fail the runtime traps we
+     * can't opt out of from a patched APK.
      */
     private fun resolveTargetSdk(originalTarget: Int): Int {
         val ceiling = targetSdkVersion
@@ -799,6 +890,93 @@ class ApkService(private val jobManager: JobManager) {
         jobManager.log(job, "✔ PendingIntent 호환 shim 주입 완료 ($callsitesPatched 호출, $filesPatched 파일 리다이렉트)")
     }
 
+    /**
+     * Starting with targetSdk=34 (Android 14), every `Context.registerReceiver(receiver,
+     * filter[, broadcastPermission, scheduler])` call **must** pass either `RECEIVER_EXPORTED`
+     * or `RECEIVER_NOT_EXPORTED` in a trailing int flags arg, or the runtime throws
+     * `SecurityException` the first time a dynamic receiver is registered. The 3-/5-arg
+     * `registerReceiver(..., int flags)` overloads only exist on API ≥ 33, so we can't
+     * unconditionally delegate to them — the shim picks at runtime based on SDK_INT.
+     *
+     * We inject `Lcom/apkrebirth/compat/RcvCompat;` with static methods that take the
+     * original Context as an explicit first parameter (since invoke-static has no
+     * implicit receiver) and forward to the instance method via invoke-virtual, OR-ing
+     * in `RECEIVER_EXPORTED` (0x2) when the device is on Android 13+. Then we rewrite
+     * every `invoke-virtual[/range] {...}, Landroid/content/Context;->registerReceiver(...)`
+     * call site to `invoke-static[/range] {...}, Lcom/apkrebirth/compat/RcvCompat;->...`.
+     * The register list is reused verbatim because invoke-virtual's implicit `this` and
+     * invoke-static's explicit first parameter land in the same register position.
+     *
+     * Defaults to `RECEIVER_EXPORTED` rather than `RECEIVER_NOT_EXPORTED` because legacy
+     * apps frequently listen for system broadcasts (SCREEN_ON, BOOT_COMPLETED, ...) which
+     * would be silently dropped under NOT_EXPORTED. EXPORTED is also a no-op for system
+     * broadcasts specifically, so we don't regress that path.
+     */
+    private suspend fun injectReceiverCompatShim(job: Job, extractedDir: File) = withContext(Dispatchers.IO) {
+        val smaliRoots = extractedDir.listFiles { f -> f.isDirectory && f.name.startsWith("smali") }
+            ?.sortedBy { it.name }
+            ?: emptyList()
+        if (smaliRoots.isEmpty()) {
+            jobManager.log(job, "ℹ smali 디렉토리가 없어 registerReceiver shim 주입 건너뜀")
+            return@withContext
+        }
+
+        val primaryRoot = smaliRoots.first()
+        val shimDir = File(primaryRoot, "com/apkrebirth/compat").apply { mkdirs() }
+        File(shimDir, "RcvCompat.smali").writeText(RCV_COMPAT_SMALI)
+
+        val signatures = listOf(
+            "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;",
+            "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;Ljava/lang/String;Landroid/os/Handler;)Landroid/content/Intent;",
+        )
+        val targetClasses = listOf("Landroid/content/Context;", "Landroid/content/ContextWrapper;")
+        val invokePairs = listOf("invoke-virtual" to "invoke-static", "invoke-virtual/range" to "invoke-static/range")
+
+        val replacements = buildList {
+            for (sig in signatures) {
+                val staticSig = "(Landroid/content/Context;" + sig.removePrefix("(")
+                for (cls in targetClasses) {
+                    for ((virtualOp, staticOp) in invokePairs) {
+                        val pattern = Regex(
+                            "${Regex.escape(virtualOp)} (\\{[^}]+\\}), " +
+                                "${Regex.escape(cls)}->registerReceiver${Regex.escape(sig)}",
+                        )
+                        val replacement =
+                            "$staticOp $1, Lcom/apkrebirth/compat/RcvCompat;->registerReceiver$staticSig"
+                        add(pattern to replacement)
+                    }
+                }
+            }
+        }
+
+        var filesPatched = 0
+        var callsitesPatched = 0
+        val shimPathFragment = "com/apkrebirth/compat/RcvCompat.smali"
+        for (root in smaliRoots) {
+            root.walkTopDown()
+                .filter { it.isFile && it.extension == "smali" }
+                .filter { !it.absolutePath.endsWith(shimPathFragment) }
+                .forEach { smali ->
+                    val original = smali.readText()
+                    var patched = original
+                    var localHits = 0
+                    for ((regex, replacement) in replacements) {
+                        val hits = regex.findAll(patched).count()
+                        if (hits > 0) {
+                            patched = regex.replace(patched, replacement)
+                            localHits += hits
+                        }
+                    }
+                    if (localHits > 0) {
+                        smali.writeText(patched)
+                        filesPatched++
+                        callsitesPatched += localHits
+                    }
+                }
+        }
+        jobManager.log(job, "✔ registerReceiver 호환 shim 주입 완료 ($callsitesPatched 호출, $filesPatched 파일 리다이렉트)")
+    }
+
     private suspend fun writeBackupRules(job: Job, extractedDir: File) = withContext(Dispatchers.IO) {
         val xmlDir = File(extractedDir, "res/xml").apply { mkdirs() }
         File(xmlDir, "backup_rules.xml").writeText(
@@ -983,6 +1161,53 @@ class ApkService(private val jobManager: JobManager) {
     const v0, 0x4000000
     or-int/2addr p3, v0
     invoke-static {p0, p1, p2, p3}, Landroid/app/PendingIntent;->getService(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;
+    move-result-object v0
+    return-object v0
+.end method
+"""
+
+        /**
+         * Smali wrapper that adds `RECEIVER_EXPORTED` (0x2) to the flags parameter of
+         * `Context.registerReceiver` on Android 13+ (API 33+, when the int-flags
+         * overloads were introduced). On older Android the flag-less overload is used
+         * instead — it never had the requirement. See [injectReceiverCompatShim].
+         *
+         * `.registers` layout: for a static method with N single-width params and
+         * L locals, `.registers = N + L`. Params occupy the LAST N registers
+         * (p0 = v(total-N), ..., pN-1 = v(total-1)); locals are v0..v(L-1).
+         * 0x21 = 33 fits in `const/16`.
+         */
+        private val RCV_COMPAT_SMALI = """.class public Lcom/apkrebirth/compat/RcvCompat;
+.super Ljava/lang/Object;
+.source "RcvCompat.smali"
+
+
+.method public static registerReceiver(Landroid/content/Context;Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;
+    .registers 5
+    sget v0, Landroid/os/Build${'$'}VERSION;->SDK_INT:I
+    const/16 v1, 0x21
+    if-lt v0, v1, :legacy
+    const/4 v1, 0x2
+    invoke-virtual {p0, p1, p2, v1}, Landroid/content/Context;->registerReceiver(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;I)Landroid/content/Intent;
+    move-result-object v0
+    return-object v0
+    :legacy
+    invoke-virtual {p0, p1, p2}, Landroid/content/Context;->registerReceiver(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;
+    move-result-object v0
+    return-object v0
+.end method
+
+.method public static registerReceiver(Landroid/content/Context;Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;Ljava/lang/String;Landroid/os/Handler;)Landroid/content/Intent;
+    .registers 7
+    sget v0, Landroid/os/Build${'$'}VERSION;->SDK_INT:I
+    const/16 v1, 0x21
+    if-lt v0, v1, :legacy
+    const/4 v1, 0x2
+    invoke-virtual {p0, p1, p2, p3, p4, v1}, Landroid/content/Context;->registerReceiver(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;Ljava/lang/String;Landroid/os/Handler;I)Landroid/content/Intent;
+    move-result-object v0
+    return-object v0
+    :legacy
+    invoke-virtual {p0, p1, p2, p3, p4}, Landroid/content/Context;->registerReceiver(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;Ljava/lang/String;Landroid/os/Handler;)Landroid/content/Intent;
     move-result-object v0
     return-object v0
 .end method
