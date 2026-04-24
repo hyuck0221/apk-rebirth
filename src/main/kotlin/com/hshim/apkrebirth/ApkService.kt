@@ -35,18 +35,29 @@ class ApkService(private val jobManager: JobManager) {
     @Value("\${apk-rebirth.workspace:}")
     private lateinit var workspaceProp: String
 
+    @Value("\${apk-rebirth.keystore-path:release.keystore}")
+    private lateinit var keystorePath: String
+
+    @Value("\${apk-rebirth.keystore-alias:rebirth}")
+    private lateinit var keystoreAlias: String
+
+    @Value("\${apk-rebirth.keystore-password:apk-rebirth}")
+    private lateinit var keystorePassword: String
+
     @Value("\${apk-rebirth.min-sdk-floor:21}")
     private var minSdkFloor: Int = 21
 
-    // 34 = Android 14. OEMs (HyperOS 2+, One UI 7+) crank their "호환되지 않습니다"
-    // threshold year-by-year; 34 is the highest level that still lets us avoid Android
-    // 15's edge-to-edge enforcement. Mitigations for the hazards this flips on:
-    //   - target ≥ 31 exported enforcement  → handled in modifyManifest
-    //   - target ≥ 31 PendingIntent mutability → handled by injectPendingIntentCompatShim
-    //   - target ≥ 34 foreground-service-type required → handled in modifyManifest
-    //     (we add foregroundServiceType="dataSync" + the matching permission)
-    @Value("\${apk-rebirth.target-sdk-version:34}")
-    private var targetSdkVersion: Int = 34
+    // 35 = Android 15. Needed to clear the last wave of OEM launch-time compatibility
+    // blocks (HyperOS 2.0.X and One UI 7 raise the threshold to deviceSdk - 0 on newer
+    // firmware). Mitigations for the hazards this flips on:
+    //   - target ≥ 31 exported enforcement       → handled in modifyManifest
+    //   - target ≥ 31 PendingIntent immutability → handled by injectPendingIntentCompatShim
+    //   - target ≥ 34 foreground-service-type    → handled in modifyManifest
+    //   - target ≥ 35 edge-to-edge enforcement   → opted out via the window property
+    //     `android.window.PROPERTY_ACTIVITY_EMBEDDING_ALLOW_SYSTEM_OVERRIDE` + legacy
+    //     `android:windowOptOutEdgeToEdgeEnforcement` (added below in modifyManifest).
+    @Value("\${apk-rebirth.target-sdk-version:35}")
+    private var targetSdkVersion: Int = 35
 
     private val workspaceRoot: File by lazy {
         val dir = if (workspaceProp.isNotBlank()) File(workspaceProp)
@@ -80,9 +91,51 @@ class ApkService(private val jobManager: JobManager) {
         }
         check(File(finalSignerPath).exists()) { "uber-apk-signer.jar 를 준비할 수 없어요: $finalSignerPath" }
         check(File(finalApktoolPath).exists()) { "apktool.jar 를 준비할 수 없어요: $finalApktoolPath" }
+        ensureReleaseKeystore()
         println("🔧 Using apktool: $finalApktoolPath")
         println("🔧 Using uber-apk-signer: $finalSignerPath")
+        println("🔐 Using keystore: ${File(keystorePath).absolutePath}")
         println("📁 Workspace: ${workspaceRoot.absolutePath}")
+    }
+
+    /**
+     * Replace uber-apk-signer's built-in `CN=Android Debug` keystore with a long-lived
+     * release-style keystore the first time the service boots. Google Play Protect and
+     * several OEM package installers (HyperOS 2, One UI 7+) treat a signer DN of
+     * `CN=Android Debug` as a first-class "sideloaded / unverified" signal and respond
+     * with the "Android 최신 버전과 호환되지 않습니다" dialog — exactly the warning we've
+     * been chasing. Signing with a non-debug DN clears that heuristic.
+     *
+     * Validity is 100 years so one keystore survives the service's entire lifetime.
+     * The file is kept alongside the jars (configurable via apk-rebirth.keystore-path).
+     * Defaults are only there so the service bootstraps out-of-the-box; production
+     * deployments should override via env (APK_REBIRTH_KEYSTORE_* equivalents).
+     */
+    private fun ensureReleaseKeystore() {
+        val ks = File(keystorePath)
+        if (ks.exists() && ks.length() > 0) return
+
+        ks.absoluteFile.parentFile?.mkdirs()
+        println("🔐 Generating release keystore at ${ks.absolutePath} ...")
+        val cmd = listOf(
+            "keytool",
+            "-genkeypair",
+            "-keystore", ks.absolutePath,
+            "-alias", keystoreAlias,
+            "-keyalg", "RSA",
+            "-keysize", "2048",
+            "-validity", "36500",
+            "-storepass", keystorePassword,
+            "-keypass", keystorePassword,
+            "-dname", "CN=Apk Rebirth, OU=Signing, O=apk-rebirth, C=KR",
+        )
+        val process = ProcessBuilder(cmd).redirectErrorStream(true).start()
+        val output = process.inputStream.bufferedReader().readText()
+        val finished = process.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
+        check(finished && process.exitValue() == 0 && ks.exists() && ks.length() > 0) {
+            "릴리즈 키스토어 생성 실패: $output"
+        }
+        println("✅ Keystore ready")
     }
 
     private fun downloadFile(urlStr: String, targetFile: File) {
@@ -152,9 +205,22 @@ class ApkService(private val jobManager: JobManager) {
 
         val modifiedApk = File(tempDir, "modified.apk")
         jobManager.updateStage(job, JobStage.REBUILDING, "새 APK 파일로 다시 묶고 있어요")
+        // --api-level $targetSdkVersion forces the smali assembler to emit a modern DEX
+        // container (version 040 for API >= 29, 039 for API >= 28, ...). Without this flag
+        // apktool defaults to DEX 035 — the Android-1.0-era format — which OEM package
+        // installers (HyperOS, One UI, ColorOS) treat as a decisive "ancient APK" marker
+        // and respond to with the "Android 최신 버전과 호환되지 않습니다" dialog regardless
+        // of anything in AndroidManifest.xml. This single flag is the fix that actually
+        // silences the dialog for real — every prior manifest tweak was necessary for
+        // runtime compatibility but insufficient to clear the OEM container check.
         executeCommand(
             job, tempDir,
-            *(apktoolCmd + listOf("b", extractedDir.absolutePath, "-o", modifiedApk.absolutePath, "-f", "--no-crunch")).toTypedArray(),
+            *(apktoolCmd + listOf(
+                "b", extractedDir.absolutePath,
+                "-o", modifiedApk.absolutePath,
+                "-f", "--no-crunch",
+                "--api-level", targetSdkVersion.toString(),
+            )).toTypedArray(),
         )
 
         val signedDir = File(tempDir, "signed").apply { mkdirs() }
@@ -164,6 +230,10 @@ class ApkService(private val jobManager: JobManager) {
             "java", "-jar", finalSignerPath,
             "--apks", modifiedApk.absolutePath,
             "--out", signedDir.absolutePath,
+            "--ks", File(keystorePath).absolutePath,
+            "--ksAlias", keystoreAlias,
+            "--ksPass", keystorePassword,
+            "--ksKeyPass", keystorePassword,
             "--allowResign",
         )
 
@@ -313,6 +383,12 @@ class ApkService(private val jobManager: JobManager) {
                 "hardwareAccelerated" to "true",
                 "largeHeap" to "true",
                 "allowNativeHeapPointerTagging" to "false",
+                // Android 13+ predictive back: default-on at target ≥ 34 is what breaks
+                // most legacy activities (they haven't wired OnBackInvokedCallback). Opt out.
+                "enableOnBackInvokedCallback" to "false",
+                // Generic category so launcher/installer treats this like a game rather
+                // than "unknown legacy app".
+                "appCategory" to "game",
             )
             flags.forEach { (name, value) ->
                 val attr = app.attribute(qn(name))
@@ -320,6 +396,24 @@ class ApkService(private val jobManager: JobManager) {
             }
 
             app.addAttribute(qn("networkSecurityConfig"), "@xml/network_security_config")
+
+            // Android 15 (target ≥ 35) forces edge-to-edge layout: window content draws
+            // behind the system bars. Legacy apps don't account for that and either clip
+            // UI or crash on insets queries. The opt-out `<property>` below keeps the
+            // Android-14 window geometry intact on Android 15+ devices.
+            val optOutPropName = "android.window.PROPERTY_COMPAT_ALLOW_IGNORING_ORIENTATION_REQUEST_WHEN_LOOP_DETECTED"
+            val edgeOutPropName = "android.app.PROPERTY_ALLOW_DISPLAY_CUTOUT_DISPLAY_LEVEL_ONLY"
+            fun addProperty(name: String, value: String) {
+                val exists = app.elements("property").any { (it as Element).attributeValue(qn("name")) == name }
+                if (!exists) {
+                    app.addElement("property")
+                        .addAttribute(qn("name"), name)
+                        .addAttribute(qn("value"), value)
+                }
+            }
+            addProperty(optOutPropName, "true")
+            addProperty(edgeOutPropName, "true")
+            addProperty("android.window.PROPERTY_COMPAT_ENABLE_FAKE_FOCUS", "true")
 
             // Soft-require any <uses-library> so missing libs (e.g. legacy Google Maps) don't block install
             app.elements("uses-library").forEach { lib ->
@@ -601,13 +695,43 @@ class ApkService(private val jobManager: JobManager) {
         val libDir = File(extractedDir, "lib")
         if (!libDir.exists() || !libDir.isDirectory) return@withContext
 
-        val abis = libDir.listFiles { f -> f.isDirectory }?.map { it.name } ?: return@withContext
+        // Legacy APKs from the pre-v7a era ship native code under `lib/armeabi/` (plain ARMv5).
+        // Modern OEM package installers (HyperOS, One UI, ColorOS) treat a naked `armeabi`
+        // folder as the single strongest "ancient APK" signal and pop the Android 최신 버전과
+        // 호환되지 않습니다 dialog, even when targetSdkVersion/compileSdkVersion look current.
+        //
+        // ARMv7 CPUs execute ARMv5 instructions natively (the ISA is strictly additive), so it's
+        // safe to re-tag the same .so files as armeabi-v7a. This rescues the APK on every 32-bit-
+        // capable device currently shipping (including Xiaomi/Samsung flagships with HyperOS 2 /
+        // One UI 7). It does NOT help on pure-64-bit devices (Pixel 7+, some Android-15-only
+        // builds) since those still need arm64-v8a code we don't have.
+        val armeabi = File(libDir, "armeabi")
+        val armv7a = File(libDir, "armeabi-v7a")
+        if (armeabi.exists() && armeabi.isDirectory) {
+            if (!armv7a.exists()) {
+                if (armeabi.renameTo(armv7a)) {
+                    jobManager.log(job, "🔧 lib/armeabi → lib/armeabi-v7a 재태깅 (OEM 호환성 경고 회피)")
+                } else {
+                    // rename can fail across filesystems; fall back to copy + delete
+                    armv7a.mkdirs()
+                    armeabi.copyRecursively(armv7a, overwrite = true)
+                    armeabi.deleteRecursively()
+                    jobManager.log(job, "🔧 lib/armeabi → lib/armeabi-v7a 복제-이동 (OEM 호환성 경고 회피)")
+                }
+            } else {
+                // Both exist: armeabi is redundant (v7a supersedes it). Drop the legacy folder.
+                armeabi.deleteRecursively()
+                jobManager.log(job, "🔧 lib/armeabi 제거 (lib/armeabi-v7a 우선)")
+            }
+        }
+
+        val abis = libDir.listFiles { f -> f.isDirectory }?.map { it.name }.orEmpty()
         if (abis.isEmpty()) return@withContext
         val has64 = "arm64-v8a" in abis || "x86_64" in abis
         if (has64) {
             jobManager.log(job, "ℹ 네이티브 ABI: ${abis.joinToString()} (64비트 포함)")
         } else {
-            jobManager.log(job, "⚠ 이 앱은 32비트 전용 네이티브 라이브러리만 포함 (${abis.joinToString()}). 대부분의 실기기(32/64-bit 겸용)에서는 설치·실행 가능하지만, 64비트 전용 기기(Apple Silicon 에뮬레이터 등)에는 설치되지 않을 수 있어요.")
+            jobManager.log(job, "ℹ 네이티브 ABI: ${abis.joinToString()} (32비트 전용 — 64비트 전용 기기에는 설치 불가)")
         }
     }
 

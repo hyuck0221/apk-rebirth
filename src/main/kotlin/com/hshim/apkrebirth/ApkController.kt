@@ -31,7 +31,7 @@ class ApkController(
     @ResponseBody
     fun createJob(
         @RequestParam("file") file: MultipartFile,
-        @RequestParam("renamePackage", required = false) renamePackage: Boolean = false,
+        @RequestParam("renamePackage", required = false) renamePackage: Boolean = true,
     ): ResponseEntity<Map<String, Any>> {
         if (file.isEmpty) {
             return ResponseEntity.badRequest().body(mapOf("error" to "Empty file"))

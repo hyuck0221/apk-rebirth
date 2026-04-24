@@ -41,3 +41,7 @@ out/
 
 .claude
 .omc
+
+### Generated release keystore (auto-created on first boot) ###
+release.keystore
+*.keystore
